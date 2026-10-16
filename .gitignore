@@ -4,3 +4,4 @@ runs/
 session.json
 *.png
 __pycache__/
+.pw-browsers/

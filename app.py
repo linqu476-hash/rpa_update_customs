@@ -44,6 +44,29 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# Hosted on Linux (Streamlit Cloud / Docker): keep the Playwright browser in a folder the app controls,
+# so the dashboard and the runs it starts always look in the same place. A value that is already set
+# (for example by the Windows installer's start_dashboard.bat) is kept.
+os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BASE / ".pw-browsers"))
+
+
+@st.cache_resource(show_spinner="Installing the browser for the automation (first start only, about a minute)...")
+def ensure_browser():
+    """Download Chromium once per server start. Only on Linux hosting; on Windows it is already installed."""
+    if not sys.platform.startswith("linux"):
+        return "skipped"
+    try:
+        r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:                                   # noqa: BLE001
+        return f"failed: {e}"
+    return "ok" if r.returncode == 0 else "failed: " + (r.stderr or r.stdout)[-500:]
+
+
+_browser_status = ensure_browser()
+if _browser_status.startswith("failed"):
+    st.warning("The automation browser could not be installed on this server. " + _browser_status)
+
 
 # ----------------------------------------------------------------- helpers
 def get_secret(name, default=""):
