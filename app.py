@@ -395,6 +395,56 @@ def list_runs():
     return runs
 
 
+# ------------------------------------------------------- download package
+# Only these files go into the download. Never .env, secrets, run history or screenshots.
+PACKAGE_FILES = ["app.py", "excel_io.py", "browser_setup.py", "runner.py", "rpa_customs.py", "rpa_erp.py",
+                 "requirements.txt", "start_dashboard.bat", ".env.example", ".streamlit/config.toml",
+                 "invoice_template.xlsx"]
+
+START_HERE = """EXPORT INVOICE AUTOMATION - RUN IT ON YOUR OWN PC
+================================================
+
+You need: a Windows PC on the company network (or VPN) that can open D365.
+
+1. Install Python once: https://www.python.org/downloads/windows/
+   On the first screen of the installer, TICK "Add python.exe to PATH".
+2. Extract this ZIP to a normal folder, for example C:\\rpa_dashboard
+   (do not run it from inside the ZIP).
+3. Copy the file  .env.example  to a new file named  .env  and fill in:
+       ERP_USER=your_username@dc.libgroup.com
+       ERP_PASSWORD=your_password
+       APP_PASSWORD=choose-a-dashboard-password
+   Use your own D365 account. Never share the .env file.
+4. Double-click  start_dashboard.bat
+   The first start takes a few minutes. Your browser opens the dashboard.
+   Keep the black window open while you use it.
+5. In the dashboard, press "Test connection to D365". It should say it is reachable.
+
+Uses Microsoft Edge or Chrome that is already on your PC - nothing else to download.
+If Windows SmartScreen warns about the .bat file, choose "More info" > "Run anyway"
+(only if you downloaded this package from your own team's dashboard).
+"""
+
+
+@st.cache_data(show_spinner=False)
+def build_package_zip():
+    import io
+    import zipfile
+    buf, included = io.BytesIO(), []
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for name in PACKAGE_FILES:
+            path = BASE / name
+            if not path.exists():
+                continue
+            data = path.read_bytes()
+            if name.endswith(".bat"):                                  # Windows batch files need CRLF line ends
+                data = data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+            z.writestr(f"rpa_dashboard/{name}", data)
+            included.append(name)
+        z.writestr("rpa_dashboard/START_HERE.txt", START_HERE.replace("\n", "\r\n"))
+    return buf.getvalue(), included
+
+
 # ------------------------------------------------------------- access gate
 app_password = get_secret("APP_PASSWORD")
 if app_password and not st.session_state.get("auth"):
@@ -485,7 +535,8 @@ else:
     if finished and (RUNS / finished).exists():
         render_finished_run(finished)
 
-tab_customs, tab_header, tab_history = st.tabs(["Update Customs No", "Invoice header", "Run history"])
+tab_customs, tab_header, tab_history, tab_install = st.tabs(
+    ["Update Customs No", "Invoice header", "Run history", "Run on your PC"])
 
 # ---------------------------------------------------------- Update Customs No
 with tab_customs:
@@ -633,3 +684,27 @@ with tab_history:
             st.info("This run is still in progress. Follow it in the panel at the top of the page.")
         else:
             (show_customs_result if meta.get("kind") == "customs" else show_header_result)(d, "hist")
+
+# ---------------------------------------------------------------- Run on your PC
+with tab_install:
+    st.markdown(
+        "The automation has to run on a PC that can open D365 - one inside the company network or on VPN. "
+        "Download the package below and run it on your own PC; you can sign in with your own D365 account."
+    )
+    zip_bytes, included = build_package_zip()
+    st.download_button("Download package for your PC (ZIP)", zip_bytes, file_name="rpa_dashboard.zip",
+                       mime="application/zip", type="primary")
+    st.caption(f"{len(zip_bytes) / 1024:.0f} KB. It contains the app and a start file. "
+               "It does not contain any password, saved run or other user's data.")
+    st.markdown(
+        "**Then, on your PC**\n"
+        "1. Install Python once from python.org and tick **Add python.exe to PATH**.\n"
+        "2. Extract the ZIP to a normal folder, such as `C:\\rpa_dashboard`.\n"
+        "3. Copy `.env.example` to `.env` and fill in your D365 user, your password and a dashboard password.\n"
+        "4. Double-click `start_dashboard.bat`. The first start takes a few minutes; your browser then opens the dashboard.\n"
+        "5. Press **Test connection to D365** in the sidebar. It should say D365 is reachable."
+    )
+    missing = [f for f in PACKAGE_FILES if f not in included]
+    if missing:
+        st.warning("These files are not in the app's folder, so they are missing from the package: "
+                   + ", ".join(missing))
