@@ -55,11 +55,11 @@ PASSWORD = os.environ["ERP_PASSWORD"]
 
 
 def login(page):
-    page.goto(ERP_URL, wait_until="domcontentloaded")
+    page.goto(ERP_URL, wait_until="domcontentloaded", timeout=90_000)
 
     # Screenshot step 1: username field (standard ADFS ids shown first, generic fallback second)
     user_box = page.locator("#userNameInput, input[type='text'], input[type='email']").first
-    user_box.wait_for(state="visible", timeout=30_000)
+    user_box.wait_for(state="visible", timeout=60_000)
     user_box.fill(USERNAME)
 
     # Screenshot step 2: password field
@@ -68,13 +68,31 @@ def login(page):
     # Screenshot step 3: Sign in button
     page.locator("#submitButton, span:has-text('Sign in'), input[type='submit']").first.click()
 
-    # Wait until we are back on the AX app (not on the ADFS page anymore)
-    page.wait_for_url("**/namespaces/AXSF/**", timeout=60_000)
-    page.wait_for_load_state("networkidle", timeout=60_000)
+    # Wait up to 2 minutes for ONE of: the D365 app opens (success) - or ADFS rejects the sign-in.
+    for _ in range(240):
+        url = page.url
+        if "/namespaces/AXSF" in url and "/adfs/" not in url.lower():
+            break                                                        # signed in
+        err = page.locator("#errorText:visible")
+        if err.count() > 0 and err.first.inner_text().strip():
+            raise RuntimeError("Sign-in was rejected by D365: " + err.first.inner_text().strip() +
+                               " - check the user and password (repeated wrong attempts can lock the account).")
+        page.wait_for_timeout(500)
+    else:
+        page.screenshot(path="login_timeout.png")
+        try:
+            text = page.inner_text("body")[:200].replace("\n", " ")
+        except Exception:                                                # noqa: BLE001
+            text = "(page text not readable)"
+        raise RuntimeError(f"Sign-in did not finish within 2 minutes. The browser is on: {url} | "
+                           f"the page says: {text}")
 
-    # Detect failed login (ADFS shows an error message and stays on the login page)
-    if page.locator("#errorText:visible").count() > 0:
-        raise RuntimeError("Login failed: " + page.locator("#errorText").inner_text())
+    # D365 keeps background requests running, so 'networkidle' may never come - do not depend on it.
+    for state, secs in (("load", 60), ("networkidle", 8)):
+        try:
+            page.wait_for_load_state(state, timeout=secs * 1000)
+        except PWTimeout:
+            pass
 
 
 def dismiss_overlays(page, wait_seconds=15):
@@ -228,7 +246,10 @@ def open_invoice_header(page, invoice_no):
     if not opened:
         page.screenshot(path="header_debug.png")
         raise RuntimeError("Invoice Header tab did not open - see header_debug.png")
-    page.wait_for_load_state("networkidle")
+    try:
+        page.wait_for_load_state("networkidle", timeout=10_000)   # D365 never fully goes quiet - do not insist
+    except PWTimeout:
+        pass
     print("Step 2.6 done: Invoice Header tab is open")
 
 

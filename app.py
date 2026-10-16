@@ -44,28 +44,26 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# Hosted on Linux (Streamlit Cloud / Docker): keep the Playwright browser in a folder the app controls,
-# so the dashboard and the runs it starts always look in the same place. A value that is already set
-# (for example by the Windows installer's start_dashboard.bat) is kept.
-os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BASE / ".pw-browsers"))
+# The browser the automation needs is prepared ONCE, in the background, when the dashboard starts - so the
+# page opens immediately and the first run does not have to wait for a download (see browser_setup.py).
+import threading                                                       # noqa: E402
+
+import browser_setup                                                   # noqa: E402,F401  (sets the browser folder)
 
 
-@st.cache_resource(show_spinner="Installing the browser for the automation (first start only, about a minute)...")
-def ensure_browser():
-    """Download Chromium once per server start. Only on Linux hosting; on Windows it is already installed."""
-    if not sys.platform.startswith("linux"):
-        return "skipped"
-    try:
-        r = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"],
-                           capture_output=True, text=True, timeout=600)
-    except Exception as e:                                   # noqa: BLE001
-        return f"failed: {e}"
-    return "ok" if r.returncode == 0 else "failed: " + (r.stderr or r.stdout)[-500:]
+@st.cache_resource
+def browser_state():
+    state = {"status": "preparing", "detail": ""}
 
+    def work():
+        try:
+            state["detail"] = browser_setup.prepare_browser()
+            state["status"] = "ready"
+        except Exception as e:                                         # noqa: BLE001
+            state.update(status="failed", detail=str(e)[:400])
 
-_browser_status = ensure_browser()
-if _browser_status.startswith("failed"):
-    st.warning("The automation browser could not be installed on this server. " + _browser_status)
+    threading.Thread(target=work, daemon=True).start()
+    return state
 
 
 # ----------------------------------------------------------------- helpers
@@ -83,6 +81,33 @@ def check_d365(url=D365_URL, timeout=10):
         return True, f"HTTP {e.code}"
     except Exception as e:                                   # noqa: BLE001
         return False, str(getattr(e, "reason", e))
+
+
+NETWORK_HELP = ("The dashboard server cannot reach D365 (%s). `ax.d365ffo.onprem.libgroup.com` is an internal "
+                "company address, so a dashboard hosted outside the company network - for example Streamlit "
+                "Community Cloud - cannot open it. Run the dashboard on a PC or server inside the network, or "
+                "over VPN.")
+
+
+def d365_name_resolves(url=D365_URL):
+    """True if this machine can look up the D365 host name. (Only DNS is checked, so a slow or
+    certificate-protected site is never reported as unreachable by mistake.)"""
+    import socket
+    from urllib.parse import urlparse
+    try:
+        socket.getaddrinfo(urlparse(url).hostname, 443)
+        return True
+    except OSError:
+        return False
+
+
+def explain_error(text):
+    """Turn a browser network error into plain words (or None if it is something else)."""
+    for code in ("ERR_NAME_NOT_RESOLVED", "ERR_CONNECTION_TIMED_OUT", "ERR_CONNECTION_REFUSED",
+                 "ERR_INTERNET_DISCONNECTED", "ERR_ADDRESS_UNREACHABLE", "ERR_TIMED_OUT"):
+        if code in (text or ""):
+            return NETWORK_HELP % code
+    return None
 
 
 def get_secret(name, default=""):
@@ -185,6 +210,9 @@ def launch(kind, script, args, files, env_extra, total_steps):
     """Create the run folder and start runner.py detached from Streamlit. Returns the run folder."""
     if get_active_run():
         st.error("Another automation is already running. Wait for it to finish or stop it first.")
+        return None
+    if not d365_name_resolves():
+        st.error(NETWORK_HELP % "the name does not resolve")
         return None
     run_dir = RUNS / f"{datetime.now():%Y%m%d_%H%M%S}_{kind}"
     run_dir.mkdir()
@@ -313,7 +341,8 @@ def show_customs_result(run_dir, tag="x"):
 
     status = run_status(meta)
     if status == "error" or result.get("error"):
-        st.error(f"The run stopped with an error: {result.get('error') or 'see the log below'}")
+        st.error(explain_error(result.get("error")) or
+                 f"The run stopped with an error: {result.get('error') or 'see the log below'}")
     elif status == "stopped":
         st.warning("The run was stopped before it finished. Invoices marked 'Not run' were not processed.")
     elif status == "interrupted":
@@ -353,7 +382,7 @@ def show_header_result(run_dir, tag="x"):
     elif status in ("stopped", "interrupted"):
         st.warning(f"The run was {status} before it finished.")
     else:
-        st.error("The run did not finish. See the last lines of the log and the screenshots.")
+        st.error(explain_error(log) or "The run did not finish. See the last lines of the log and the screenshots.")
     show_screenshots(run_dir, first=("step3_filled.png", "error.png"))
     show_log(run_dir, tag)
 
@@ -425,6 +454,22 @@ st.markdown('<div class="subtle">Runs the D365 Production export invoice steps f
             unsafe_allow_html=True)
 if not creds_ok:
     st.warning("Enter the D365 user and password in the sidebar before running.")
+
+# Browser preparation status (background thread started at dashboard start)
+def render_browser_status():
+    if browser_state()["status"] != "preparing":
+        st.rerun()                                                     # ready: redraw so Run unlocks
+    st.info("Preparing the automation browser (first start only). You can load your data meanwhile; "
+            "the Run buttons unlock when it is ready.")
+
+
+bstate = browser_state()
+preparing = bstate["status"] == "preparing"
+if preparing:
+    st.fragment(run_every=3)(render_browser_status)()
+elif bstate["status"] == "failed":
+    st.warning("The browser could not be prepared in advance. The first run will try again by itself. "
+               f"Detail: {bstate['detail']}")
 
 # Live panel (while a run is in progress) or the result of the last run
 active = get_active_run()
@@ -522,7 +567,7 @@ with tab_customs:
             st.markdown("**Rows to process**")
             st.dataframe(rows_df, hide_index=True, use_container_width=True, height=min(35 * (len(rows_df) + 1) + 3, 320))
 
-    can_run = bool(groups) and not errors and creds_ok and not busy
+    can_run = bool(groups) and not errors and creds_ok and not busy and not preparing
     if busy:
         st.caption("A run is in progress. Follow it in the panel at the top, or stop it there.")
     if st.button("Run Customs No update", type="primary", disabled=not can_run, key="run_customs"):
@@ -554,7 +599,7 @@ with tab_header:
     )
     st.caption("Dates are typed as d/m/yyyy, the way D365 shows them. The run does not click Save.")
 
-    if st.button("Fill invoice header", type="primary", disabled=not (invoice_no.strip() and creds_ok) or busy, key="run_header"):
+    if st.button("Fill invoice header", type="primary", disabled=not (invoice_no.strip() and creds_ok) or busy or preparing, key="run_header"):
         payload = []
         for _, r in edited.dropna(subset=["Field"]).iterrows():
             picks = [p.strip() for p in str(r.get("Dropdown row") or "").split(",") if p.strip()]
