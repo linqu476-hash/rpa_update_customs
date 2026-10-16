@@ -16,6 +16,8 @@ import os
 import re
 import sys
 from dotenv import load_dotenv
+
+from browser_setup import launch_browser   # sets the browser folder + installs Chromium if missing
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 load_dotenv()
@@ -376,7 +378,7 @@ def main():
         raise SystemExit("Usage: python rpa_erp.py SC260309")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=os.environ.get("HEADLESS", "0") == "1")
+        browser = launch_browser(p)      # installs Chromium on first use if it is missing
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         try:

@@ -69,6 +69,22 @@ if _browser_status.startswith("failed"):
 
 
 # ----------------------------------------------------------------- helpers
+D365_URL = "https://ax.d365ffo.onprem.libgroup.com/namespaces/AXSF/"
+
+
+def check_d365(url=D365_URL, timeout=10):
+    """Can THIS machine open the D365 address? Any HTTP answer (even 401/403) means yes."""
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return True, f"HTTP {r.status}"
+    except urllib.error.HTTPError as e:
+        return True, f"HTTP {e.code}"
+    except Exception as e:                                   # noqa: BLE001
+        return False, str(getattr(e, "reason", e))
+
+
 def get_secret(name, default=""):
     """st.secrets first (Streamlit hosting), then environment / .env."""
     try:
@@ -376,10 +392,23 @@ with st.sidebar:
     st.caption("Passwords are passed to the run only and are never written to the run folder.")
 
     st.subheader("Run options")
-    show_browser = st.toggle("Show the browser window", value=False,
-                             help="Turn on only when the dashboard runs on your own PC and you want to watch the steps.")
+    on_linux = sys.platform.startswith("linux")
+    show_browser = st.toggle("Show the browser window", value=False, disabled=on_linux,
+                             help=("A hosted Linux server has no screen, so the browser always runs in the background."
+                                   if on_linux else
+                                   "Turn on only when the dashboard runs on your own PC and you want to watch the steps."))
     do_update = st.toggle("Click Update Customs No at the end", value=True,
                           help="Writes to production data. Turn off to fill and add invoices only.")
+
+    st.subheader("Connection check")
+    if st.button("Test connection to D365", use_container_width=True):
+        ok, detail = check_d365()
+        if ok:
+            st.success(f"D365 is reachable from this server ({detail}).")
+        else:
+            st.error(f"This server cannot reach D365: {detail}. If the dashboard is hosted outside the company "
+                     "network (for example Streamlit Community Cloud), it cannot open internal addresses. "
+                     "Run it on a PC or server inside the network, or over VPN.")
 
 creds_ok = bool(erp_user and erp_pw)
 run_env = {

@@ -19,6 +19,8 @@ import json
 import os
 import re
 from dotenv import load_dotenv
+
+from browser_setup import launch_browser   # sets the browser folder + installs Chromium if missing
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 load_dotenv()
@@ -593,8 +595,7 @@ def main():
         print(f"Plan: Customs No {c} <- {len(inv)} invoice(s): {', '.join(inv)}")
     results, error = {}, None
     with sync_playwright() as p:
-        # HEADLESS=1 (set by the dashboard) runs without showing the browser
-        browser = p.chromium.launch(headless=os.environ.get("HEADLESS", "0") == "1")
+        browser = launch_browser(p)      # installs Chromium on first use if it is missing
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
         page = context.new_page()
         try:
