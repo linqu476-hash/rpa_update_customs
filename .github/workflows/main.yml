@@ -26,7 +26,7 @@ jobs:
 
       - name: Build exe
         run: >
-          pyinstaller --noconfirm --onedir --name RPA_Update_Customs
+          pyinstaller --noconfirm --onefile --name RPA_Update_Customs
           --collect-all streamlit --copy-metadata streamlit
           --add-data "app.py;." --add-data "rpa_customs.py;."
           --add-data "rpa_erp.py;." --add-data "excel_io.py;."
